@@ -212,16 +212,14 @@ async function trySso() {
 async function boot(source = "load") {
   const hadToken = Boolean(token);
   const params = new URLSearchParams(location.search);
+  const skip = sessionStorage.getItem("bs_skip_auto_sso") === "1";
+  const bypass = skip || params.has("local") || params.get("sso") === "1";
   // A shared HUGOXK SSO cookie (set by the portal after GitHub / Cloudflare Access) avoids a second login.
   const sso = token ? "have" : await trySso();
   if (!token && !hadToken) {
     // No token and no cookie: send the browser through the portal once. After logout (or a failed
     // round-trip) the login form stays so it cannot loop.
-    const skip = sessionStorage.getItem("bs_skip_auto_sso") === "1";
-    if (sso === "401" && !skip && !params.has("local") && params.get("sso") !== "1") {
-      location.replace("/v1/auth/sso/start");
-      return;
-    }
+    if (sso === "401" && !bypass) { location.replace("/v1/auth/sso/start"); return; }
     return loginView();
   }
   let r, j;
@@ -236,7 +234,9 @@ async function boot(source = "load") {
   if (hadToken && source === "load" && r.status === 401) {
     token = null; me = null;
     localStorage.removeItem("bs_owner_token");
-    if (await trySso() === "ok") return boot("sso");
+    const retry = await trySso();
+    if (retry === "ok") return boot("sso");
+    if (retry === "401" && !bypass) { location.replace("/v1/auth/sso/start"); return; }
     return loginView({ reason: "signed_out" });
   }
   const pasted = source === "token" ? token : "";

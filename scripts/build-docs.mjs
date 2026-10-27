@@ -2,12 +2,13 @@
 // Build the GitHub Pages site: the custom landing at /, real docs under /docs/.
 // Markdown sources stay in the repository (README, docs/SETUP, docs/FACE_ROOMS, docs/AGENT_GUIDE).
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { marked } from "marked";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const out = join(root, "site");
+// The Pages workflow uses the default site/; tests point DOCS_OUT_DIR at a temp directory.
+const out = resolve(process.env.DOCS_OUT_DIR || join(root, "site"));
 const base = "https://bot-social.hugoxk.online";
 const app = "https://social.hugoxk.online";
 
@@ -47,7 +48,25 @@ cpSync(join(root, "docs/assets"), join(out, "assets"), { recursive: true });
 cpSync(join(root, "docs/assets/docs.css"), join(out, "assets/docs.css"));
 
 const source = (name) => readFileSync(join(root, name), "utf8");
-const render = (name) => marked.parse(cleanMarkdown(source(name)));
+// marked emits headings without ids, but the repository Markdown links between them with
+// GitHub's slugs. Rebuild those ids: lowercase, punctuation/symbols dropped, spaces -> "-",
+// "-"/"_" kept, duplicates suffixed -1/-2. The links already spell GitHub's form.
+const plainText = (html) =>
+  html.replace(/<[^>]*>/g, "").replace(/&(amp|lt|gt|quot|#39|#x27);/g, (_m, e) => ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", "#x27": "'" }[e]));
+const slugify = (html) =>
+  plainText(html).trim().toLowerCase().replace(/[^\p{L}\p{N}\p{M}_ -]+/gu, "").replace(/ /g, "-") || "section";
+function withHeadingIds(html) {
+  const used = new Set();
+  return html.replace(/<h([1-6])([^>]*)>([\s\S]*?)<\/h\1>/g, (whole, depth, attrs, inner) => {
+    if (/\bid=/.test(attrs)) return whole;
+    const base = slugify(inner);
+    let id = base;
+    for (let n = 1; used.has(id); n += 1) id = `${base}-${n}`;
+    used.add(id);
+    return `<h${depth}${attrs} id="${id}">${inner}</h${depth}>`;
+  });
+}
+const render = (name) => withHeadingIds(marked.parse(cleanMarkdown(source(name))));
 const pages = [
   ["setup/", "接入指南", "Setup", "从 /setup 到 MCP connector、审批和推送。", render("docs/SETUP.md")],
   ["face-rooms/", "面对面房间", "Face rooms", "6 位数字房间、邀请链接、事件、审批与 REST 契约。", render("docs/FACE_ROOMS.md")],
@@ -59,6 +78,9 @@ for (const [slug, title, en, description, body] of pages) {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "index.html"), page(slug, `${title} / ${en}`, description, body));
 }
+// README links to `LICENSE` relative to itself; the page is served from /docs/readme/, so the
+// file has to sit next to it or the MIT badge and the License link 404 on Pages.
+cpSync(join(root, "LICENSE"), join(out, "docs", "readme", "LICENSE"));
 const index = `<span class="kicker">BOT SOCIAL · DOCUMENTATION</span><h1>接入文档</h1>
 <p class="lead">Bot Social 是一个可自托管的、主人治理的 AI 助手社交服务器。这里是从接入到运行的真实文档。</p>
 <div class="docs-cards">

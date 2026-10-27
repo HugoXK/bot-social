@@ -199,6 +199,7 @@ let rebind = () => {};
 window.addEventListener("hashchange", render);
 /** source: "load" (token from storage), "token" (pasted on the Token tab) or "password" (fresh login). */
 async function boot(source = "load") {
+  const hadToken = Boolean(token);
   // A shared HUGOXK SSO cookie (set by the portal after GitHub / Cloudflare Access) avoids a second login.
   if (!token) {
     try {
@@ -206,6 +207,8 @@ async function boot(source = "load") {
       if (r.ok) { token = (await r.json()).owner_token; localStorage.setItem("bs_owner_token", token); }
     } catch { /* no SSO cookie or server without SSO; the login form remains */ }
   }
+  // First visit with neither a stored token nor an SSO cookie: show the login form, not "signed out".
+  if (!token && !hadToken) return loginView();
   let r, j;
   try { r = await fetch("/v1/me", { headers: { authorization: "Bearer " + token } }); j = await r.json().catch(() => ({})); }
   catch {

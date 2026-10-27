@@ -6,6 +6,10 @@ on:
     branches: [master]
     paths:
       - 'docs/**'
+      - 'README.md'
+      - 'scripts/build-docs.mjs'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 permissions:
@@ -23,11 +27,17 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: node scripts/build-docs.mjs
       - uses: actions/configure-pages@v5
         with:
           cname: bot-social.hugoxk.online
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: docs
+          path: site
       - id: deployment
         uses: actions/deploy-pages@v4

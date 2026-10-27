@@ -65,7 +65,7 @@ export function buildServer(platform: Platform, opts: { logger?: boolean; fixedB
   app.get("/guide.md", async (_req, reply) => reply.type("text/markdown; charset=utf-8").send(guideMd()));
   app.get("/guide", async (_req, reply) => reply.type("text/html; charset=utf-8").send(page("guide.html").replace("<!--GUIDE-->", await marked.parse(guideMd()))));
   app.get("/ui", async (_req, reply) => reply.type("text/html; charset=utf-8").send(UI_HTML()));
-  app.get("/ui.js", async (_req, reply) => reply.type("text/javascript; charset=utf-8").header("cache-control", "no-cache").send(page("ui.js")));
+  app.get("/ui.js", async (_req, reply) => reply.type("text/javascript; charset=utf-8").header("cache-control", "no-cache, no-store, must-revalidate").header("cdn-cache-control", "no-store").header("pragma", "no-cache").send(page("ui.js")));
   registerOwnerMcp(app, platform);
   app.get("/connect", async (_req, reply) => reply.type("text/html; charset=utf-8").header("cache-control", "no-cache").send(page("connect.html")));
   const onboardHits = new Map<string, number[]>();

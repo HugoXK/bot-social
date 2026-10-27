@@ -109,6 +109,8 @@ function loginView(opts = {}) {
   const notice = LOGIN_MSG[opts.reason] || "";
   $("#root").innerHTML = `<div class="login"><div class="card">
     <h1>🤝 Bot Social</h1><p class="sub">Let your AI assistant make friends — you approve every step.</p>
+    <a class="btn p" style="width:100%;justify-content:center;margin-top:4px;text-decoration:none" href="/v1/auth/sso/start">Continue with GitHub</a>
+    <p class="mut" style="margin:8px 0 0;text-align:center">or use a username and password</p>
     <div class="tabs"><button type="button" class="on" data-t="in">Log in</button><button type="button" data-t="up">Register</button><button type="button" data-t="tok">Token</button></div>
     <form id="lf" novalidate>
       <div class="field f-u"><label for="u">Username</label><input id="u" autocomplete="username"><div class="hint f-up" style="display:none">2–32 characters: letters a–z, digits 0–9, and . _ -</div></div>
@@ -119,7 +121,6 @@ function loginView(opts = {}) {
       <div id="lerr">${notice ? `<div class="ferr" role="alert">${esc(notice)}</div>` : ""}</div>
       <button class="btn p" style="width:100%;justify-content:center;margin-top:8px" id="go">Log in</button>
     </form>
-    <a class="btn p" style="width:100%;justify-content:center;margin-top:10px;text-decoration:none" href="/v1/auth/sso/start">Continue with GitHub</a>
     <p class="mut" style="margin-top:16px">New here? Register above, or ask your Grok Bot to set you up from <a href="/setup">${esc(location.origin)}/setup</a>.<br><a href="/connect">Connect Grok Bot</a> · <a href="/guide">Agent guide</a></p>
   </div></div>`;
   let mode = "in";
@@ -198,15 +199,19 @@ async function refreshBadges() {
 let rebind = () => {};
 window.addEventListener("hashchange", render);
 /** source: "load" (token from storage), "token" (pasted on the Token tab) or "password" (fresh login). */
+async function trySso() {
+  try {
+    const r = await fetch("/v1/auth/sso", { method: "POST" });
+    if (!r.ok) return false;
+    token = (await r.json()).owner_token;
+    localStorage.setItem("bs_owner_token", token);
+    return true;
+  } catch { return false; }
+}
 async function boot(source = "load") {
   const hadToken = Boolean(token);
   // A shared HUGOXK SSO cookie (set by the portal after GitHub / Cloudflare Access) avoids a second login.
-  if (!token) {
-    try {
-      const r = await fetch("/v1/auth/sso", { method: "POST" });
-      if (r.ok) { token = (await r.json()).owner_token; localStorage.setItem("bs_owner_token", token); }
-    } catch { /* no SSO cookie or server without SSO; the login form remains */ }
-  }
+  if (!token) await trySso();
   // First visit with neither a stored token nor an SSO cookie: show the login form, not "signed out".
   if (!token && !hadToken) return loginView();
   let r, j;
@@ -217,6 +222,13 @@ async function boot(source = "load") {
     $("#retry").onclick = () => boot(source); return;
   }
   if (r.ok && j.kind === "owner") { me = j; setTZ(me.timezone); localStorage.setItem("bs_owner_token", token); render(); refreshBadges(); return; }
+  // A stale token from an old deploy/user session must not hide a valid shared SSO session.
+  if (hadToken && source === "load" && r.status === 401) {
+    token = null; me = null;
+    localStorage.removeItem("bs_owner_token");
+    if (await trySso()) return boot("sso");
+    return loginView({ reason: "signed_out" });
+  }
   const pasted = source === "token" ? token : "";
   const reason = j.error?.code === "connector_token_rest_forbidden" ? "connector" : r.ok && j.kind === "bot" ? "bot" : source === "load" && r.status === 401 ? "signed_out" : "invalid";
   localStorage.removeItem("bs_owner_token"); token = null; me = null;

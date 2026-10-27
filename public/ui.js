@@ -94,7 +94,14 @@ const LOGIN_MSG = {
   bot: "This is a Bot token. The console needs an owner token, or sign in with your username and password.",
   signed_out: "You were signed out. Please sign in again.",
 };
-function logout(reason) { localStorage.removeItem("bs_owner_token"); token = null; me = null; if (reason) loginView({ reason }); else render(); }
+function logout(reason) {
+  const old = token;
+  localStorage.removeItem("bs_owner_token"); token = null; me = null;
+  // Best effort: revoke the server token and clear the shared HUGOXK SSO cookie. A network failure still
+  // signs this browser out locally.
+  if (old) fetch("/v1/auth/logout", { method: "POST", headers: { authorization: "Bearer " + old } }).catch(() => {});
+  if (reason) loginView({ reason }); else render();
+}
 const copy = async (text) => { try { await navigator.clipboard.writeText(text); toast("Copied"); } catch { prompt("Copy:", text); } };
 
 // ------------------------------------------------------------------ login
@@ -112,6 +119,7 @@ function loginView(opts = {}) {
       <div id="lerr">${notice ? `<div class="ferr" role="alert">${esc(notice)}</div>` : ""}</div>
       <button class="btn p" style="width:100%;justify-content:center;margin-top:8px" id="go">Log in</button>
     </form>
+    <a class="btn p" style="width:100%;justify-content:center;margin-top:10px;text-decoration:none" href="/v1/auth/sso/start">Continue with GitHub</a>
     <p class="mut" style="margin-top:16px">New here? Register above, or ask your Grok Bot to set you up from <a href="/setup">${esc(location.origin)}/setup</a>.<br><a href="/connect">Connect Grok Bot</a> · <a href="/guide">Agent guide</a></p>
   </div></div>`;
   let mode = "in";
@@ -191,6 +199,13 @@ let rebind = () => {};
 window.addEventListener("hashchange", render);
 /** source: "load" (token from storage), "token" (pasted on the Token tab) or "password" (fresh login). */
 async function boot(source = "load") {
+  // A shared HUGOXK SSO cookie (set by the portal after GitHub / Cloudflare Access) avoids a second login.
+  if (!token) {
+    try {
+      const r = await fetch("/v1/auth/sso", { method: "POST" });
+      if (r.ok) { token = (await r.json()).owner_token; localStorage.setItem("bs_owner_token", token); }
+    } catch { /* no SSO cookie or server without SSO; the login form remains */ }
+  }
   let r, j;
   try { r = await fetch("/v1/me", { headers: { authorization: "Bearer " + token } }); j = await r.json().catch(() => ({})); }
   catch {

@@ -7,6 +7,7 @@ import { Platform, Principal } from "./platform.js";
 import { ensureBotctl } from "./botctl-build.js";
 import { marked } from "marked";
 import { registerOwnerMcp } from "./owner-mcp.js";
+import { clearSsoCookie, readCookie, ssoConfig, ssoStartUrl, verifySsoCookie } from "./sso.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const UI_HTML = () => readFileSync(join(here, "..", "public", "index.html"), "utf8");
@@ -111,6 +112,28 @@ export function buildServer(platform: Platform, opts: { logger?: boolean; fixedB
   // ---- owners
   app.post("/v1/owners", async (req, reply) => reply.status(201).send(platform.registerOwner(B(req))));
   app.post("/v1/auth/login", async (req) => platform.login(B(req)));
+  // Sign out this login token on the server too, and clear the shared SSO cookie.
+  app.post("/v1/auth/logout", async (req, reply) => {
+    const h = req.headers.authorization;
+    const p = auth(req);
+    const c = ssoConfig();
+    if (c?.cookieDomain) reply.header("set-cookie", clearSsoCookie(c.cookieDomain)!);
+    return platform.logout(p, h?.startsWith("Bearer ") ? h.slice(7) : undefined);
+  });
+  // HUGOXK shared sign-in: the portal signs a cookie for this parent domain; exchange it for a normal
+  // owner login token. Without a valid cookie the console shows the GitHub button, which goes to the portal.
+  app.get("/v1/auth/sso/start", async (_req, reply) => {
+    const c = ssoConfig();
+    if (!c) throw new ApiError(404, "sso_not_configured", "single sign-on is not configured on this server");
+    return reply.redirect(ssoStartUrl(c.portal, `${platform.publicBaseUrl.replace(/\/$/, "")}/ui`));
+  });
+  app.post("/v1/auth/sso", async (req) => {
+    const c = ssoConfig();
+    if (!c) throw new ApiError(404, "sso_not_configured", "single sign-on is not configured on this server");
+    const payload = verifySsoCookie(c.secret, readCookie(req.headers.cookie));
+    if (!payload) throw new ApiError(401, "sso_required", "sign in at the HUGOXK portal first");
+    return platform.ssoLogin(c.ownerId, payload.email);
+  });
   app.get("/v1/me", async (req) => platform.me(auth(req)));
   app.patch("/v1/me", async (req) => platform.updateSettings(auth(req), B(req)));
 

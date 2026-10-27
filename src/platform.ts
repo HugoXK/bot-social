@@ -179,6 +179,25 @@ export class Platform {
     return { owner_id: o.id, owner_token: this.issueToken("owner", o.id) };
   }
 
+  /** Exchange a verified HUGOXK SSO identity for a normal owner login token. */
+  ssoLogin(ownerId: string, email: string) {
+    const o = this.owner(ownerId);
+    this.audit.append(`sso:${email}`, "owner.sso_login", o.id, [o.id], { email });
+    return { owner_id: o.id, owner_token: this.issueToken("owner", o.id) };
+  }
+
+  /** Revoke the login token that made this request (from the console's Log out). */
+  logout(p: Principal, token: string | undefined) {
+    const ownerId = this.requireOwner(p);
+    const row = token
+      ? this.get("SELECT * FROM tokens WHERE token_hash = ? AND kind = 'owner' AND scope IS NULL AND revoked_at IS NULL", hashToken(token))
+      : undefined;
+    assert(row && row.subject_id === ownerId, 401, "unauthorized", "invalid or revoked token");
+    this.run("UPDATE tokens SET revoked_at = ? WHERE token_hash = ?", nowIso(), row.token_hash);
+    this.audit.append(`owner:${ownerId}`, "owner.logout", ownerId, [ownerId], {});
+    return { ok: true };
+  }
+
   private issueToken(kind: "owner" | "bot", subject: string) {
     const t = randomToken(kind === "owner" ? "otk" : "btk");
     this.run("INSERT INTO tokens (token_hash, kind, subject_id, created_at) VALUES (?,?,?,?)", hashToken(t), kind, subject, nowIso());

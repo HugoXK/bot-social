@@ -96,6 +96,7 @@ const LOGIN_MSG = {
 };
 function logout(reason) {
   const old = token;
+  try { sessionStorage.setItem("bs_skip_auto_sso", "1"); } catch {}
   localStorage.removeItem("bs_owner_token"); token = null; me = null;
   // Best effort: revoke the server token and clear the shared HUGOXK SSO cookie. A network failure still
   // signs this browser out locally.
@@ -202,18 +203,27 @@ window.addEventListener("hashchange", render);
 async function trySso() {
   try {
     const r = await fetch("/v1/auth/sso", { method: "POST" });
-    if (!r.ok) return false;
+    if (!r.ok) return String(r.status);
     token = (await r.json()).owner_token;
     localStorage.setItem("bs_owner_token", token);
-    return true;
-  } catch { return false; }
+    return "ok";
+  } catch { return "network"; }
 }
 async function boot(source = "load") {
   const hadToken = Boolean(token);
+  const params = new URLSearchParams(location.search);
   // A shared HUGOXK SSO cookie (set by the portal after GitHub / Cloudflare Access) avoids a second login.
-  if (!token) await trySso();
-  // First visit with neither a stored token nor an SSO cookie: show the login form, not "signed out".
-  if (!token && !hadToken) return loginView();
+  const sso = token ? "have" : await trySso();
+  if (!token && !hadToken) {
+    // No token and no cookie: send the browser through the portal once. After logout (or a failed
+    // round-trip) the login form stays so it cannot loop.
+    const skip = sessionStorage.getItem("bs_skip_auto_sso") === "1";
+    if (sso === "401" && !skip && !params.has("local") && params.get("sso") !== "1") {
+      location.replace("/v1/auth/sso/start");
+      return;
+    }
+    return loginView();
+  }
   let r, j;
   try { r = await fetch("/v1/me", { headers: { authorization: "Bearer " + token } }); j = await r.json().catch(() => ({})); }
   catch {
@@ -226,7 +236,7 @@ async function boot(source = "load") {
   if (hadToken && source === "load" && r.status === 401) {
     token = null; me = null;
     localStorage.removeItem("bs_owner_token");
-    if (await trySso()) return boot("sso");
+    if (await trySso() === "ok") return boot("sso");
     return loginView({ reason: "signed_out" });
   }
   const pasted = source === "token" ? token : "";

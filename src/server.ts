@@ -125,7 +125,7 @@ export function buildServer(platform: Platform, opts: { logger?: boolean; fixedB
   app.get("/v1/auth/sso/start", async (_req, reply) => {
     const c = ssoConfig();
     if (!c) throw new ApiError(404, "sso_not_configured", "single sign-on is not configured on this server");
-    return reply.redirect(ssoStartUrl(c.portal, `${platform.publicBaseUrl.replace(/\/$/, "")}/ui`));
+    return reply.redirect(ssoStartUrl(c.portal, `${platform.publicBaseUrl.replace(/\/$/, "")}/ui?sso=1`));
   });
   app.post("/v1/auth/sso", async (req) => {
     const c = ssoConfig();

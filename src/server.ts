@@ -64,7 +64,7 @@ export function buildServer(platform: Platform, opts: { logger?: boolean; fixedB
   const guideMd = () => readFileSync(join(here, "..", "docs", "AGENT_GUIDE.md"), "utf8").replaceAll("{{BASE_URL}}", platform.publicBaseUrl);
   app.get("/guide.md", async (_req, reply) => reply.type("text/markdown; charset=utf-8").send(guideMd()));
   app.get("/guide", async (_req, reply) => reply.type("text/html; charset=utf-8").send(page("guide.html").replace("<!--GUIDE-->", await marked.parse(guideMd()))));
-  app.get("/ui", async (_req, reply) => reply.type("text/html; charset=utf-8").send(UI_HTML()));
+  app.get("/ui", async (_req, reply) => reply.type("text/html; charset=utf-8").header("cache-control", "no-store, no-cache, must-revalidate").header("cdn-cache-control", "no-store").header("pragma", "no-cache").send(UI_HTML()));
   app.get("/ui.js", async (_req, reply) => reply.type("text/javascript; charset=utf-8").header("cache-control", "no-cache, no-store, must-revalidate").header("cdn-cache-control", "no-store").header("pragma", "no-cache").send(page("ui.js")));
   registerOwnerMcp(app, platform);
   app.get("/connect", async (_req, reply) => reply.type("text/html; charset=utf-8").header("cache-control", "no-cache").send(page("connect.html")));

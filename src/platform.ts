@@ -1179,6 +1179,26 @@ export class Platform {
     return [...new Set(caps as string[])];
   }
 
+  /**
+   * One capability reads a grant's `scope`: `calendar.freebusy.read` bounds its window by `window_days` and its hour
+   * rule by `hours` (see `calendarWindow`) and validates both here. Every other capability is matched by `findGrant`
+   * alone, and the console's request card names a scope only for free/busy, so a scope accepted for anything else is
+   * a promise to the owner that no code keeps. An empty object is the no-scope value every internal caller writes and
+   * stays accepted; a malformed free/busy value is refused rather than silently widened (`parseHours` returning null
+   * used to drop the hour rule, so `hours: "9-11"` granted every hour).
+   */
+  private assertScopeSupported(capability: string, scope: unknown) {
+    if (scope === undefined || scope === null) return;
+    assert(typeof scope === "object" && !Array.isArray(scope), 400, "invalid_request", "scope must be an object");
+    const s = scope as Record<string, unknown>;
+    const keys = Object.keys(s);
+    if (!keys.length) return;
+    assert(capability === "calendar.freebusy.read", 400, "invalid_request", `scope is not supported for ${capability}`);
+    for (const k of keys) assert(k === "window_days" || k === "hours", 400, "invalid_request", `scope field ${k} is not supported for ${capability}`);
+    if (s.window_days !== undefined) assert(Number.isInteger(s.window_days) && (s.window_days as number) > 0, 400, "invalid_request", "window_days must be a positive whole number of days");
+    if (s.hours !== undefined) assert(typeof s.hours === "string" && parseHours(s.hours), 400, "invalid_request", "hours must look like 09:00-18:00");
+  }
+
   consent(p: Principal, relId: string, body: { decision: "accept" | "decline"; grant_capabilities?: (string | { capability: string; scope?: any; expires_in_days?: number })[] }) {
     const ownerId = this.requireOwner(p);
     this.expireStale();
@@ -1219,9 +1239,14 @@ export class Platform {
    *  confirmed friendship whose grants are not durable yet. Announcing it is announceActivation, after the commit. */
   private writeActivation(r: any, targetSpecs: { capability: string; scope?: any; expires_in_days?: number }[], actor: string) {
     const fbScope = { window_days: 14, hours: "09:00-18:00" };
+    const targetToRequester = new Map<string, any>(DEFAULT_CAPABILITIES.map((c) => [c, { capability: c }]));
+    for (const s of targetSpecs) targetToRequester.set(s.capability, { scope: s.capability === "calendar.freebusy.read" ? fbScope : {}, ...s });
+    // #211: accepting a request is the target side's own scope write point. `grant_capabilities` reaches the grant
+    // here exactly as it does through `addGrant` and `requestGrant`, so the one scope judgement guards it too. Every
+    // entry is checked before the transaction opens: a refusal leaves the row `pending_target`, with no grants
+    // written, no `relationship.changed` and no `relationship.accepted` audit entry.
+    for (const s of targetToRequester.values()) this.assertScopeSupported(s.capability, s.scope);
     this.db.transaction(() => {
-      const targetToRequester = new Map<string, any>(DEFAULT_CAPABILITIES.map((c) => [c, { capability: c }]));
-      for (const s of targetSpecs) targetToRequester.set(s.capability, { scope: s.capability === "calendar.freebusy.read" ? fbScope : {}, ...s });
       for (const s of targetToRequester.values()) this.insertGrant(r.id, r.target_owner, r.requester_bot, s.capability, s.scope, s.expires_in_days, actor);
       const requesterToTarget = new Set<string>([...DEFAULT_CAPABILITIES, ...J(r.offered_caps, [])]);
       // #23: on an invite-born friendship the requester is the joiner. What the joiner's owner gives the inviter's Bot
@@ -1363,6 +1388,7 @@ export class Platform {
     assert(r.status === "active", 409, "invalid_state", `relationship is ${r.status}`);
     assert(ownerId === r.requester_owner || ownerId === r.target_owner, 403, "forbidden");
     this.validCaps([body?.capability]);
+    this.assertScopeSupported(body?.capability, body?.scope);
     const grantee = ownerId === r.requester_owner ? r.target_bot : r.requester_bot;
     // The supersede and the insert are one write: a throw between them must not leave the old grant revoked.
     const id = this.db.transaction(() => this.insertGrant(relId, ownerId, grantee, body.capability, body.scope, body.expires_in_days, `owner:${ownerId}`)).immediate();
@@ -1792,6 +1818,7 @@ export class Platform {
     const r = this.get("SELECT * FROM relationships WHERE id = ? AND status = 'active'", pl.relationship_id);
     assert(r && (r.requester_bot === botId || r.target_bot === botId), 403, "no_relationship");
     this.validCaps([pl.capability]);
+    this.assertScopeSupported(pl.capability, pl.scope);
     const peerOwner = r.requester_bot === botId ? r.target_owner : r.requester_owner;
     const aprId = this.createApproval(peerOwner, "grant_request", r.id, botId, null, `@${this.bot(botId).handle} requests capability ${pl.capability}`, ["grant.requires_owner"], [], LIMITS.approvalTtlMs,
       { capability: pl.capability, scope: pl.scope ?? {}, reason: pl.reason ?? null, grantee_bot: botId });
@@ -2358,8 +2385,12 @@ export class Platform {
     } else if (a.kind === "grant_request") {
       const req = J(a.note, {});
       if (approve) {
+        // The scope that lands on the grant is the one the card showed (`edited_params.scope` wins), so it goes
+        // through the same check every write route uses before it is stored.
+        const scope = body.edited_params?.scope ?? req.scope;
+        this.assertScopeSupported(req.capability, scope);
         // One write, like the owner route: the supersede cannot survive a throw from the insert.
-        result.grant_id = this.db.transaction(() => this.insertGrant(a.subject_id, ownerId, req.grantee_bot, req.capability, body.edited_params?.scope ?? req.scope, body.edited_params?.expires_in_days, `owner:${ownerId}`)).immediate();
+        result.grant_id = this.db.transaction(() => this.insertGrant(a.subject_id, ownerId, req.grantee_bot, req.capability, scope, body.edited_params?.expires_in_days, `owner:${ownerId}`)).immediate();
       }
       this.emit(a.bot_id, "approval.decided", { approval_id: a.id, kind: a.kind, capability: req.capability, decision, note_to_bot: body.note_to_bot ?? null });
     }

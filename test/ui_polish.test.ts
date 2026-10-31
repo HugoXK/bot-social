@@ -1,8 +1,14 @@
 // Console consistency (#18): owner-scoped audit chain, readable audit lines, time zones, naming and layout.
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 import { ownerWithBot, startServer } from "./helpers.js";
 import { loadConsole, pub } from "./ui_helpers.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 let S: Awaited<ReturnType<typeof startServer>>;
 before(async () => { S = await startServer(); });
@@ -84,7 +90,70 @@ test("calendar input is read in the owner's time zone", () => {
   setTZ("Europe/Berlin");
   assert.equal(zonedToIso("2026-10-21T10:00"), "2026-10-21T08:00:00.000Z"); // CEST
   assert.equal(zonedToIso("2026-12-21T10:00"), "2026-12-21T09:00:00.000Z"); // CET
+  // The hour the clocks skip in spring holds no moment of its own. Reading it as if it did would move the entry to a
+  // different time than the owner typed, so the console refuses it; real times on both sides of the gap stay as they are.
+  assert.equal(zonedToIso("2026-03-29T02:00"), null, "02:00 on the spring-forward day does not exist in Europe/Berlin");
+  assert.equal(zonedToIso("2026-03-29T02:30"), null, "nor does 02:30");
+  assert.equal(zonedToIso("2026-03-29T03:30"), "2026-03-29T01:30:00.000Z", "the time after the gap still reads back as itself");
+  assert.equal(zonedToIso("2026-10-25T02:30"), "2026-10-25T01:30:00.000Z", "the repeated hour keeps the instant it picks today");
+  setTZ("America/New_York");
+  assert.equal(zonedToIso("2026-03-08T02:30"), null, "the same gap in a zone that skips 02:00–03:00");
+  assert.equal(zonedToIso("2026-03-08T03:30"), "2026-03-08T07:30:00.000Z", "and the time just after it is read in the new offset");
   setTZ("UTC");
   assert.equal(zonedToIso("2026-10-21T10:00"), "2026-10-21T10:00:00.000Z");
   assert.equal(zonedToIso(""), null);
+});
+
+/** The My Bots page, which carries the calendar form, rendered from ui.js and talking to the test server. */
+function calendarPage(base: string, token: string) {
+  const src = readFileSync(join(here, "..", "public", "ui.js"), "utf8").replace(/\nboot\(\);\s*$/, "\n;globalThis.__ui = { PAGES };\n");
+  const nodes = new Map<string, any>();
+  const el = (sel: string) => {
+    if (!nodes.has(sel)) nodes.set(sel, { sel, value: "", innerHTML: "", innerText: "", onclick: null, dataset: {}, style: {}, setAttribute() {}, removeAttribute() {}, closest: () => ({}) });
+    return nodes.get(sel);
+  };
+  const posted: any[] = [];
+  const ctx: any = {
+    localStorage: { getItem: (k: string) => (k === "bs_owner_token" ? token : null), setItem() {}, removeItem() {} },
+    window: { addEventListener() {} },
+    document: {
+      querySelector: (s: string) => el(s), querySelectorAll: () => [],
+      createElement: () => ({ setAttribute() {}, appendChild() {}, style: {}, classList: { add() {}, remove() {} } }),
+    },
+    location: { hash: "#/bots", origin: "https://example.test", reload() {} },
+    navigator: { clipboard: { writeText: async () => {} } },
+    fetch: async (path: string, init?: any) => {
+      if (init?.method === "POST" && path === "/v1/calendar/entries") posted.push(JSON.parse(init.body));
+      return fetch(base + path, init);
+    },
+    setInterval() {}, setTimeout, clearTimeout, URLSearchParams, Intl, Date, console, confirm: () => true, prompt: () => null,
+  };
+  vm.runInNewContext(src, ctx);
+  return {
+    posted,
+    /** Render the page and return its HTML; the calendar form's fields and its Add button are bound afterwards. */
+    async render() { const v: any = { innerHTML: "", querySelector: () => null, querySelectorAll: () => [] }; await ctx.__ui.PAGES.bots(v); return v.innerHTML as string; },
+    fill(start: string, end: string, title = "") { el("#cs").value = start; el("#ce").value = end; el("#ct").value = title; },
+    add() { return el("#addcal").onclick(); },
+    calerr: () => String(el("#calerr").innerHTML),
+  };
+}
+
+test("the calendar form refuses a time the clocks skip instead of booking another time", async () => {
+  const A = await ownerWithBot(S.base, "dstgap");
+  const me = await A.owner.req("PATCH", "/v1/me", { timezone: "Europe/Berlin" });
+  assert.equal(me.timezone, "Europe/Berlin", "the page must read the gap in the owner's zone");
+  const page = calendarPage(S.base, A.owner.token);
+  await page.render();
+
+  // 02:30 on the spring-forward day is not a time in Berlin: the two clocks there read 01:59 and then 03:00.
+  page.fill("2026-03-29T02:30", "2026-03-29T04:00", "Skipped hour");
+  await page.add();
+
+  assert.deepEqual(page.posted, [], "nothing is sent for a wall time that this zone does not have");
+  const err = page.calerr();
+  assert.match(err, /Europe\/Berlin/, `the form names the zone whose clocks skip that time: ${err}`);
+  assert.match(err, /does not exist/, `and says the time does not exist: ${err}`);
+  const { entries } = await A.owner.req("GET", "/v1/calendar/entries");
+  assert.equal(entries.length, 0, "no entry was written");
 });

@@ -11,13 +11,18 @@ let TZ = browserTZ();
 function setTZ(zone) { try { new Intl.DateTimeFormat("en-GB", { timeZone: zone }); TZ = zone || browserTZ(); } catch { TZ = browserTZ(); } }
 /** fmt(iso) → "19/10, 08:21 GMT+8"; { time: true } drops the date; { zone: false } drops the label. */
 const zoneName = () => { try { return new Intl.DateTimeFormat("en-GB", { timeZone: TZ, timeZoneName: "short" }).formatToParts(new Date()).find((p) => p.type === "timeZoneName")?.value || TZ; } catch { return TZ; } };
-/** Read a datetime-local value ("2026-10-21T10:00") as wall-clock time in TZ and return the ISO instant. */
+/** Read a datetime-local value ("2026-10-21T10:00") as wall-clock time in TZ and return the ISO instant, or null when TZ has no such wall time (the hour the clocks skip). */
 function zonedToIso(local) {
   const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(local || ""); if (!m) return null;
   const wall = Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5]);
-  const offset = (t) => { const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: TZ, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" }).formatToParts(new Date(t)).map((x) => [x.type, x.value])); return Date.UTC(+p.year, p.month - 1, +p.day, +p.hour, +p.minute) - t; };
-  const first = wall - offset(wall);
-  return new Date(wall - offset(first)).toISOString();
+  const wallAt = (t) => { const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: TZ, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" }).formatToParts(new Date(t)).map((x) => [x.type, x.value])); return Date.UTC(+p.year, p.month - 1, +p.day, +p.hour, +p.minute); };
+  // The offset changes at the zone's transitions, so the first guess can land on another wall time: refine it once, then
+  // keep only an instant that reads back as exactly the wall time the owner typed. The hour the clocks skip has none
+  // (null, rather than a different hour, which would silently book a time the owner never typed); the hour they repeat
+  // has two, and the instant this code already picks is still the answer.
+  const first = wall - (wallAt(wall) - wall), second = wall - (wallAt(first) - first);
+  for (const t of [first, second]) if (wallAt(t) === wall) return new Date(t).toISOString();
+  return null;
 }
 const fmt = (iso, o = {}) => iso ? new Intl.DateTimeFormat("en-GB", { hour12: false, timeZone: TZ, ...(o.time ? {} : { month: "numeric", day: "numeric" }), hour: "2-digit", minute: "2-digit", ...(o.zone === false ? {} : { timeZoneName: "short" }) }).format(new Date(iso)) : "—";
 /** The date an instant falls on in the owner's zone; two times are compared where they are displayed, never in UTC. */
@@ -716,7 +721,11 @@ PAGES.bots = async (v) => {
     const err = calRangeError($("#cs").value, $("#ce").value); formErr($("#calerr"), err);
     ["#cs", "#ce"].forEach((s) => (err ? $(s).setAttribute("aria-invalid", "true") : $(s).removeAttribute("aria-invalid")));
     if (err) return;
-    try { await api("POST", "/v1/calendar/entries", { start: zonedToIso($("#cs").value), end: zonedToIso($("#ce").value), title: $("#ct").value.trim() || undefined }, true); toast("Added to calendar"); render(); }
+    // A wall time the zone's spring gap skips has no instant at all: say so and write nothing, instead of booking the
+    // hour before (or after) it under the owner's nose.
+    const start = zonedToIso($("#cs").value), end = zonedToIso($("#ce").value);
+    if (!start || !end) { formErr($("#calerr"), `That time does not exist in ${TZ} (the clocks skip it). Pick another time.`); $(!start ? "#cs" : "#ce").setAttribute("aria-invalid", "true"); return; }
+    try { await api("POST", "/v1/calendar/entries", { start, end, title: $("#ct").value.trim() || undefined }, true); toast("Added to calendar"); render(); }
     catch (e) { if (e.message !== "unauthorized") formErr($("#calerr"), e.human || ERR.network); }
   };
 };

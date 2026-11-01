@@ -196,7 +196,7 @@ test("g: an edit refused by DLP writes nothing, and the unedited approval after 
   assert.equal("mentions" in editedEv, false, "an edited line carries no mentions");
 });
 
-test("h: a face-room line refused for a sender who left writes nothing, the mention list included", async (t) => {
+test("h: a face-room line whose sender left is settled by the leave, and the refused decision writes nothing", async (t) => {
   const s = await startServer();
   t.after(s.stop);
   const A = await ownerWithBot(s.base, "frla");
@@ -208,16 +208,20 @@ test("h: a face-room line refused for a sender who left writes nothing, the ment
   const row = (sql: string, ...args: any[]) => s.platform.db.prepare(sql).get(...args) as any;
   const before = row("SELECT mentions FROM face_room_drafts WHERE id = ?", d.message_id).mentions;
   assert.ok(before, "the draft carries the mention list");
-  const cardMentions = async () => ((await A.owner.req("GET", "/v1/approvals?status=pending")) as any).approvals.find((x: any) => x.approval_id === d.approval_id).face_room.mentions;
-  assert.deepEqual(await cardMentions(), [B.handle], "the card shows the @");
+  const cardMentions = async (status: string) => ((await A.owner.req("GET", `/v1/approvals?status=${status}`)) as any).approvals.find((x: any) => x.approval_id === d.approval_id).face_room.mentions;
+  assert.deepEqual(await cardMentions("pending"), [B.handle], "the card shows the @");
   const events = async () => ((await B.owner.req("GET", `/v1/face-rooms/${roomId}`)) as any).events.filter((e: any) => e.type === "room.message");
 
-  // The sender leaves while its line waits: the delivery door refuses it, and must not have rewritten the draft.
+  // The sender leaves while its line waits: the leave settles the card, and the decision that follows — refused,
+  // because there is nothing pending left to decide — must not have rewritten the draft either.
   await A.owner.req("POST", `/v1/face-rooms/${roomId}/leave`, { bots: [A.bot.id] });
-  await expectApiError(A.owner.req("POST", `/v1/approvals/${d.approval_id}/decision`, { decision: "approved_with_edits", edited_payload: { text: "rewritten line" } }), 409, "not_a_member");
-  assert.equal(row("SELECT mentions FROM face_room_drafts WHERE id = ?", d.message_id).mentions, before, "a not_a_member refusal leaves the mention list exactly as it was");
-  assert.equal(row("SELECT status FROM face_room_drafts WHERE id = ?", d.message_id).status, "pending_approval", "the line is still held");
-  assert.equal(row("SELECT status FROM approvals WHERE id = ?", d.approval_id).status, "pending", "the card is still pending");
-  assert.deepEqual(await cardMentions(), [B.handle], "the card still shows the @");
+  assert.equal(row("SELECT status FROM approvals WHERE id = ?", d.approval_id).status, "cancelled", "leaving the room settles the waiting card instead of leaving it pending");
+  assert.equal(row("SELECT decision FROM approvals WHERE id = ?", d.approval_id).decision, "room_left", "the settled card says why it was settled");
+  assert.equal(row("SELECT status FROM face_room_drafts WHERE id = ?", d.message_id).status, "cancelled", "the line is settled with the card");
+  assert.equal(row("SELECT mentions FROM face_room_drafts WHERE id = ?", d.message_id).mentions, before, "a refused decision leaves the mention list exactly as it was");
+  assert.deepEqual(await cardMentions("cancelled"), [B.handle], "the settled card still shows the @");
+  const refused = await expectApiError(A.owner.req("POST", `/v1/approvals/${d.approval_id}/decision`, { decision: "approved_with_edits", edited_payload: { text: "rewritten line" } }), 409, "invalid_state");
+  assert.match(refused.message, /approval is cancelled/, "the refusal names the settled card");
+  assert.equal(row("SELECT status FROM face_room_drafts WHERE id = ?", d.message_id).status, "cancelled", "the refused decision left the settled line alone");
   assert.equal((await events()).length, 0, "no member was told of a line");
 });

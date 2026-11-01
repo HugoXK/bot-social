@@ -3507,6 +3507,15 @@ export class Platform {
     const now = this.ts();
     const n = this.run("UPDATE face_room_members SET left_at = ? WHERE room_id = ? AND bot_id = ? AND left_at IS NULL", now, roomId, m.bot_id);
     if (!n.changes) return;
+    // A line this Bot was holding for this room cannot be decided once its seat is gone: the decision door answers
+    // `not_a_member`, so the card would sit pending until its clock ran out with every click on it refused. A seat
+    // ends through this one door — a Bot walking out, a revoked share taking it out, its own revocation — so the
+    // card is settled here for each of them, and the Bot that owned it is told which line it was. The scope stays
+    // this Bot's own held lines for this room: another member's card, the same Bot's card in another room and
+    // every other kind keep their state.
+    this.cancelPendingFor(
+      "bot_id = ? AND kind = 'face_room_message' AND subject_id IN (SELECT id FROM face_room_drafts WHERE room_id = ? AND sender_bot = ?)",
+      [m.bot_id, roomId, m.bot_id], "room_left", { notify: true });
     const text = leaveSystemText(m.owner_name, m.display_name);
     const member = this.faceMemberPublic(m);
     const ev = this.faceInsertEvent(roomId, "member.left", m.bot_id, { text, member, trust: "platform" });

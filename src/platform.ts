@@ -1946,16 +1946,18 @@ export class Platform {
         removed.push(u.room_id);
         const member = this.get("SELECT * FROM face_room_members WHERE room_id = ? AND bot_id = ? AND left_at IS NULL", u.room_id, granted);
         if (member && member.added_by_owner_id === granteeOwner && member.added_by_owner_id !== member.owner_id) {
-          this.removeFaceMember(u.room_id, member);
+          // Settle the lines first: a room emptied by this removal would otherwise close the cards as `room_closed`,
+          // naming the consequence instead of the share that took the seat away.
           this.settleHeldRoomCards(u.room_id, granted);
+          this.removeFaceMember(u.room_id, member);
           this.endRoomGrantsForBots(u.room_id, [granted]);
         }
       }
       if (g.room_id) {
         const member = this.get("SELECT * FROM face_room_members WHERE room_id = ? AND bot_id = ? AND left_at IS NULL", g.room_id, granted);
         if (member) {
-          this.removeFaceMember(g.room_id, member);
           this.settleHeldRoomCards(g.room_id, granted);
+          this.removeFaceMember(g.room_id, member);
           this.endRoomGrantsForBots(g.room_id, [granted]);
         }
         if (!removed.includes(g.room_id)) removed.push(g.room_id);
@@ -3648,10 +3650,15 @@ export class Platform {
     }
     if (botIds.length) {
       const marks = botIds.map(() => "?").join(",");
+      // A usage row says "this share seated the granted Bot in this room": it ends when that seat ends, not when
+      // the owner who brought the Bot in leaves with its own. A guest is the other owner's seat, so the row has to
+      // outlive the host's leave or the later revoke finds nothing to take the guest out of.
       this.run(`UPDATE grant_rooms SET ended_at = ? WHERE room_id = ? AND ended_at IS NULL AND grant_id IN (
         SELECT g.id FROM grants g JOIN relationships r ON r.id = g.relationship_id
-        WHERE g.grantee_bot IN (${marks}) OR r.requester_bot IN (${marks}) OR r.target_bot IN (${marks}))`,
-        now, roomId, ...botIds, ...botIds, ...botIds);
+        WHERE (g.grantee_bot IN (${marks}) OR r.requester_bot IN (${marks}) OR r.target_bot IN (${marks}))
+        AND NOT EXISTS (SELECT 1 FROM face_room_members m WHERE m.room_id = ? AND m.left_at IS NULL
+          AND m.bot_id = CASE WHEN g.grantor_owner = r.requester_owner THEN r.requester_bot ELSE r.target_bot END))`,
+        now, roomId, ...botIds, ...botIds, ...botIds, roomId);
     }
     this.run("UPDATE relationships SET status = 'revoked', updated_at = ? WHERE status = 'room' AND id IN (SELECT relationship_id FROM grants WHERE room_id = ?) AND NOT EXISTS (SELECT 1 FROM grants g2 WHERE g2.relationship_id = relationships.id AND g2.status = 'active')", now, roomId);
   }

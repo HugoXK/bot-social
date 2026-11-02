@@ -4353,6 +4353,11 @@ export class Platform {
   startFaceRoom(p: Principal, roomId: string) {
     this.advanceFaceRooms();
     const viewer = this.faceRequireMember(p, roomId);
+    // Starting the room voids the number that opened it, so it is for a home that sits here now, not for one
+    // that only brought another home's Bot in. Same non-member answer as every other door: no new code, and the
+    // refusal is word for word what an unknown room gets, so it leaks nothing.
+    const seated = this.get("SELECT 1 FROM face_room_members WHERE room_id = ? AND owner_id = ? AND left_at IS NULL", roomId, viewer.ownerId);
+    if (!seated) throw new ApiError(404, "face_room_not_found", "no such room");
     this.db.transaction(() => {
       const room = this.get("SELECT * FROM face_rooms WHERE id = ?", roomId);
       if (room.status === "closed") throw new ApiError(409, "room_closed", "this room is closed");

@@ -11,7 +11,7 @@ import { WebhookOptions, WebhookPusher, redactHeaders, redactUrl, validateHeader
 import { AttachmentLimits, AttachmentRef, DEFAULT_ATTACHMENT_LIMITS, checkFile, humanSize, refOf, sealBytes, sha256Hex, unsealBytes } from "./attachments.js";
 import { avatarFingerprint, lookOf, validateAvatar, validateColor } from "./bot-look.js";
 import { PRESENCE_DEFAULT_TTL_S, PRESENCE_MAX_TTL_S, PRESENCE_MIN_TTL_S, PRESENCE_WRITES_PER_MIN, PresenceStore } from "./presence.js";
-import { ianaTimezone, isoInTz, localMinutes, localWeekday, overlaps, parseHours } from "./time.js";
+import { ianaTimezone, isoInTz, localDayStart, localMinutes, localWeekday, overlaps, parseHours } from "./time.js";
 import {
   FACE_ROOM_NAME_MAX, FACE_ROOM_ROLE_MAX, FaceRoomLimits, isFaceCode, isInviteTicket, joinSystemText, leadSystemText, leaveSystemText, loadFaceRoomLimits, memberLabel, newInviteTicket, peerBotName, peerDisplayName, peerOwnerName, sanitizePeerName,
 } from "./face-rooms.js";
@@ -3487,6 +3487,23 @@ export class Platform {
     return this.all("SELECT * FROM calendar_entries WHERE owner_id = ? AND status = 'confirmed'", ownerId).filter((x) => overlaps(Date.parse(x.start), Date.parse(x.end), s, e));
   }
 
+  /** Cut busy intervals down to the hours a free/busy grant shares, in the grantor's own timezone. A booking that
+   *  starts or ends outside `hours` keeps only the part inside; a range that cannot mean a window (start not before
+   *  end) shares nothing. The owner's own view and the booking itself are untouched: this shapes the answer only. */
+  private busyWithinHours(busy: { start: string; end: string }[], s: number, e: number, tz: string, hrs: [number, number]) {
+    if (hrs[0] >= hrs[1]) return [];
+    const out: { start: string; end: string }[] = [];
+    for (let day = localDayStart(s, tz); day < e; day = localDayStart(day + 26 * 3600e3, tz)) {
+      const from = day + hrs[0] * 60e3, to = day + hrs[1] * 60e3;
+      if (to <= s || from >= e) continue;
+      for (const b of busy) {
+        const x = Math.max(Date.parse(b.start), from), y = Math.min(Date.parse(b.end), to);
+        if (x < y) out.push({ start: new Date(x).toISOString(), end: new Date(y).toISOString() });
+      }
+    }
+    return out.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+  }
+
   addCalendarEntry(p: Principal, body: { start: string; end: string; title?: string; location?: string }) {
     const ownerId = this.requireOwner(p);
     const s = ms(body?.start), e = ms(body?.end);
@@ -3538,7 +3555,10 @@ export class Platform {
       if (g.scope.window_days) e = Math.min(e, Date.now() + g.scope.window_days * 86400e3);
       const hrs = parseHours(g.scope.hours);
       if (hrs) hourRules.push({ tz: this.owner(peerB.owner_id).timezone, hours: hrs });
-      const busy = s < e ? this.busyOf(peerB.owner_id, s, e).map((x) => ({ start: x.start, end: x.end })) : [];
+      const raw = s < e ? this.busyOf(peerB.owner_id, s, e).map((x) => ({ start: x.start, end: x.end })) : [];
+      // `hours` bounds the answer, not just the suggestions: the peer is told the part of each booking that falls in
+      // the hours the owner chose to share, never the rest of the block.
+      const busy = hrs ? this.busyWithinHours(raw, s, e, this.owner(peerB.owner_id).timezone, hrs) : raw;
       results[sub] = { busy, grant_id: g.id, window: { start: new Date(s).toISOString(), end: new Date(Math.max(s, e)).toISOString() }, scope: g.scope, redacted: ["title", "location", "attendees"] };
       busy.forEach((b) => busyAll.push([Date.parse(b.start), Date.parse(b.end)]));
       if (e < we) busyAll.push([e, we]); // outside the granted window = unknown, treated as unavailable

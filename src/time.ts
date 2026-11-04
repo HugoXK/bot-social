@@ -33,6 +33,22 @@ export function parseHours(h: string | undefined): [number, number] | null {
   return [+m[1] * 60 + +m[2], +m[3] * 60 + +m[4]];
 }
 
+/** The instant the local calendar day containing `ms` begins, in an IANA timezone. Two passes, because a zone that
+ *  changes offset between midnight and noon would otherwise leave the boundary an hour off. */
+export function localDayStart(ms: number, tz: string): number {
+  const date = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" })
+    .formatToParts(new Date(ms));
+  const p = (parts: Intl.DateTimeFormatPart[]) => Object.fromEntries(parts.map((x) => [x.type, x.value]));
+  const d = p(date);
+  const utcMidnight = Date.UTC(+d.year, +d.month - 1, +d.day);
+  const offset = (t: number) => {
+    const q = p(new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(new Date(t)));
+    return Date.UTC(+q.year, +q.month - 1, +q.day, +q.hour, +q.minute, +q.second) - Math.floor(t / 1000) * 1000;
+  };
+  const first = utcMidnight - offset(utcMidnight);
+  return utcMidnight - offset(first);
+}
+
 /** Format an instant as ISO-8601 with the timezone's offset, e.g. 2026-10-21T15:00:00+08:00 */
 export function isoInTz(ms: number, tz: string): string {
   const d = new Date(ms);

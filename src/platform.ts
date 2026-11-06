@@ -1424,7 +1424,7 @@ export class Platform {
     // a fresh key and leaves this one in place, so this door can then revoke it like any other key.
     const custody = this.get("SELECT kid FROM bot_custody WHERE bot_id = ?", botId);
     assert(!custody || custody.kid !== kid, 409, "custody_key_held",
-      "the platform signs this bot's owner-side sends with this key; move custody to a new key first (enable_custody, rotate), then revoke this one");
+      "this is the key the platform signs this bot's owner-side sends with; rotate custody with enable_custody to move it to a new kid, then revoke this one");
     const r = this.run("UPDATE bot_keys SET status = 'revoked' WHERE bot_id = ? AND kid = ?", botId, kid);
     assert(r.changes, 404, "key_not_found");
     this.audit.append(`owner:${ownerId}`, "bot.key_revoked", botId, [ownerId], { kid });

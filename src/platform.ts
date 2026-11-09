@@ -3843,8 +3843,9 @@ export class Platform {
    * Console search: find a chat or a face room by its title face — a chat's peer handle and display name (or, for a
    * Bot token, the other Bot of its own thread), a room's note and the handles of the Bots seated in it. Message
    * bodies are never read: no line of a chat, no line said in a room, and a chat's summary is not a title either.
-   * The set is the lists' own set: a closed chat, and a room that closed or that this home has left, are not hits,
-   * so the console never offers something its pages would not show. `q` is trimmed and must be 2–100 characters;
+   * The set is the lists' own set: a closed chat (including one whose 72h window has run out, which the conversation
+   * read and the lists already report as closed/expired), and a room that closed or that this home has left, are not
+   * hits, so the console never offers something its pages would not show. `q` is trimmed and must be 2–100 characters;
    * each kind answers at most 20 hits, newest activity first.
    */
   searchConsole(p: Principal, q: unknown) {
@@ -3853,14 +3854,16 @@ export class Platform {
     const needle = term.toLowerCase();
     // Chats: the card's titles are the two handles and display names. A conversation is readable by an owner while
     // either Bot is theirs, and by a Bot token only for its own threads; a closed thread is gone from the lists.
+    // The window is filtered by its clock, not by the row's `status`: nothing rewrites an expired chat, so the status
+    // column still says `open` while every read reports it closed/expired (the same predicate `sendAsMemberOnce` uses).
     const title = "instr(lower(i.handle), ?) > 0 OR instr(lower(i.display_name), ?) > 0 OR instr(lower(pr.handle), ?) > 0 OR instr(lower(pr.display_name), ?) > 0";
     const chatRows = p.kind === "owner"
       ? this.all(`SELECT c.* FROM conversations c JOIN bots i ON i.id = c.initiator_bot JOIN bots pr ON pr.id = c.peer_bot
-          WHERE c.status != 'closed' AND (i.owner_id = ? OR pr.owner_id = ?) AND (${title})
-          ORDER BY c.updated_at DESC LIMIT 20`, p.ownerId, p.ownerId, needle, needle, needle, needle)
+          WHERE c.status != 'closed' AND (c.expires_at IS NULL OR c.expires_at > ?) AND (i.owner_id = ? OR pr.owner_id = ?) AND (${title})
+          ORDER BY c.updated_at DESC LIMIT 20`, nowIso(), p.ownerId, p.ownerId, needle, needle, needle, needle)
       : this.all(`SELECT c.* FROM conversations c JOIN bots i ON i.id = c.initiator_bot JOIN bots pr ON pr.id = c.peer_bot
-          WHERE c.status != 'closed' AND (c.initiator_bot = ? OR c.peer_bot = ?) AND (${title})
-          ORDER BY c.updated_at DESC LIMIT 20`, p.botId, p.botId, needle, needle, needle, needle);
+          WHERE c.status != 'closed' AND (c.expires_at IS NULL OR c.expires_at > ?) AND (c.initiator_bot = ? OR c.peer_bot = ?) AND (${title})
+          ORDER BY c.updated_at DESC LIMIT 20`, nowIso(), p.botId, p.botId, needle, needle, needle, needle);
     const chats = chatRows.map((c: any) => {
       const initiator = this.bot(c.initiator_bot), peer = this.bot(c.peer_bot);
       // The counterpart is the side that is not mine, exactly as the chat card names it; a thread between two of my

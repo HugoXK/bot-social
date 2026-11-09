@@ -3450,6 +3450,18 @@ export class Platform {
     if (today >= LIMITS.newConversationsPerPairPerDay) throw new ApiError(429, "rate_limited", "too many new conversations for this relationship today", { retry_after: 3600 });
     const allowed = (pl.intent.allowed_capabilities ?? intentDef.allowed).filter((c: string) => intentDef.allowed.includes(c));
     const intent = { type: intentDef.type, summary: String(pl.intent.summary ?? ""), params: pl.intent.params ?? {}, allowed_capabilities: allowed, success_criteria: pl.intent.success_criteria ?? null, max_turns: null };
+    // #512: the intent is the first line the peer reads -- `conversation.started` carries it as
+    // `untrusted_content.intent`, and every later delivery repeats `{type, summary}` -- so it is outbound text like a
+    // message's, and the same outbound DLP scans it before anything is written. The caller-authored half is split the
+    // way the draft door splits a payload: `summary` and `success_criteria` as text, `params` as the structured half.
+    // A blocked finding answers with the refusal this function already answers, before the INSERT and the event that
+    // announces it, so a refused create leaves no conversation row, no event and nothing for the peer to read.
+    const intentFlags = this.dlp(ownerId, { text: [intent.summary, intent.success_criteria ?? ""].join("\n"), structured: intent.params });
+    const intentBlocked = intentFlags.filter((f) => f.action === "block");
+    if (intentBlocked.length) {
+      this.policyDecision(botId, null, [ownerId, peer.owner_id], "conversation.create", "deny", ["dlp.blocked"], { categories: intentBlocked.map((b) => b.category) });
+      throw new ApiError(422, "dlp_blocked", "outbound DLP blocked this conversation intent", { categories: intentBlocked.map((b) => b.category) });
+    }
     const id = newId("cnv");
     const expires = pl.intent.expires_at ? new Date(ms(pl.intent.expires_at)).toISOString() : new Date(Date.now() + 72 * 3600e3).toISOString();
     this.run("INSERT INTO conversations (id, type, relationship_id, initiator_bot, peer_bot, intent, status, max_turns, created_at, updated_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",

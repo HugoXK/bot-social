@@ -760,8 +760,13 @@ export class Platform {
       // another room R2 the pair also shares — R2's reach is never resolved here, so a closed room would still take
       // the line — and the 1:1 route could write into a room's thread on nothing but a friendship and a non-room
       // grant. A conversation off that door answers exactly like one that does not exist, so ids cannot be probed.
+      // A thread opened in a room whose room door is gone is the one exception, and only on the 1:1 route: the
+      // delivery gate settles that same thread on the pair's friendship (#67) and a Bot's own draft door already
+      // takes a line there, so the console's reply must not be the single door that answers 404. A live room's
+      // thread stays its room's, and a send that names a room is still judged by that room alone.
       const doorId = roomRel?.id ?? this.findActiveRelationship(cb.botId, to.id)?.id ?? null;
-      assert(named.relationship_id === doorId, 404, "conversation_not_found", "no such conversation between these Bots");
+      const roomDoorGone = roomId === null && doorId !== null && this.wasRoomDoor(named.relationship_id);
+      assert(named.relationship_id === doorId || roomDoorGone, 404, "conversation_not_found", "no such conversation between these Bots");
       conversationId = named.id;
       message = this.draftMessage(cb.bp, conversationId, draftEnv(conversationId), typed, mentions, roomId);
     } else {
@@ -3911,6 +3916,14 @@ export class Platform {
     if (!rel || rel.status !== "room") return null;
     const g = this.get("SELECT room_id FROM grants WHERE relationship_id = ? AND room_id IS NOT NULL LIMIT 1", c.relationship_id);
     return g?.room_id ?? null;
+  }
+
+  /** Was this relationship a room's door, with that room now gone? It no longer reads `room`, but a room-scoped
+   *  grant still records that it was one. A thread it opened is settled on the pair's friendship from then on. */
+  private wasRoomDoor(relId: string): boolean {
+    const rel = this.get("SELECT status FROM relationships WHERE id = ?", relId);
+    if (!rel || rel.status === "room") return false;
+    return !!this.get("SELECT 1 FROM grants WHERE relationship_id = ? AND room_id IS NOT NULL LIMIT 1", relId);
   }
 
   /** Conversation view. Peer messages appear only once delivered, always wrapped as untrusted. */

@@ -949,9 +949,16 @@ export class Platform {
     if (body?.private_key_pem) {
       let pub: string;
       try { pub = publicRawFromPrivatePem(body.private_key_pem); } catch { throw new ApiError(400, "invalid_private_key", "private_key_pem must be an Ed25519 PKCS#8 PEM"); }
+      // The platform signs with this key on every custodial request, so the rotation window an owner's own `addKey`
+      // left on it cannot outlive the adoption: the day `expires_at` passes, envelope verification answers 401 for an
+      // expired kid, and the identity the platform now keeps can no longer act -- with no door left for the owner to
+      // repair it, since the private key is no longer theirs to rotate. Adoption clears the deadline on the single row
+      // it adopts, inside the window this lookup already enforces: a window that has already closed is still refused,
+      // so an expired credential is never brought back to life.
       const k = this.get("SELECT * FROM bot_keys WHERE bot_id = ? AND public_key = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?)", b.id, pub, nowIso());
       assert(k, 400, "key_not_registered", "this private key does not match any active key of the bot");
       kid = k.kid; mode = "uploaded";
+      this.run("UPDATE bot_keys SET expires_at = NULL WHERE bot_id = ? AND kid = ?", b.id, kid);
       this.storeCustody(b.id, kid, body.private_key_pem);
     } else {
       const kp = generateEd25519();

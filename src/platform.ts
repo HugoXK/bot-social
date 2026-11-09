@@ -3452,12 +3452,20 @@ export class Platform {
     const intent = { type: intentDef.type, summary: String(pl.intent.summary ?? ""), params: pl.intent.params ?? {}, allowed_capabilities: allowed, success_criteria: pl.intent.success_criteria ?? null, max_turns: null };
     // #512: the intent is the first line the peer reads -- `conversation.started` carries it as
     // `untrusted_content.intent`, and every later delivery repeats `{type, summary}` -- so it is outbound text like a
-    // message's, and the same outbound DLP scans it before anything is written. The caller-authored half is split the
-    // way the draft door splits a payload: `summary` and `success_criteria` as text, `params` as the structured half.
-    // A blocked finding answers with the refusal this function already answers, before the INSERT and the event that
-    // announces it, so a refused create leaves no conversation row, no event and nothing for the peer to read.
-    const intentFlags = this.dlp(ownerId, { text: [intent.summary, intent.success_criteria ?? ""].join("\n"), structured: intent.params });
-    const intentBlocked = intentFlags.filter((f) => f.action === "block");
+    // message's, and the same outbound DLP scans it before anything is written. The scanned bytes have to be the bytes
+    // the peer can read: `summary` is stored through `String()`, a string `success_criteria` is text, and anything else
+    // (an object, an array) is stored and forwarded as-is, so it is scanned as the structured half instead of being
+    // flattened to `[object Object]`. A cut by the DLP's own scan limit is a finding this door cannot answer silently --
+    // the rest of that field would be forwarded unscanned -- so it refuses exactly like a blocked rule does. A blocked
+    // finding answers with the refusal this function already answers, before the INSERT and the event that announces
+    // it, so a refused create leaves no conversation row, no event and nothing for the peer to read.
+    const criteria = intent.success_criteria;
+    const criteriaIsText = criteria === null || typeof criteria === "string";
+    const intentFlags = this.dlp(ownerId, {
+      text: [intent.summary, criteriaIsText ? (criteria ?? "") : ""].join("\n"),
+      structured: criteriaIsText ? intent.params : { params: intent.params, success_criteria: criteria },
+    });
+    const intentBlocked = intentFlags.filter((f) => f.action === "block" || f.category === "dlp.truncated");
     if (intentBlocked.length) {
       this.policyDecision(botId, null, [ownerId, peer.owner_id], "conversation.create", "deny", ["dlp.blocked"], { categories: intentBlocked.map((b) => b.category) });
       throw new ApiError(422, "dlp_blocked", "outbound DLP blocked this conversation intent", { categories: intentBlocked.map((b) => b.category) });

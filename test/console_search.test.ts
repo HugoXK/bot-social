@@ -171,3 +171,64 @@ test("the sidebar carries the search box, its gate and an empty state", () => {
   assert.equal(searchTermError("ann"), "");
   assert.match(searchResultsHtml({ chats: [], rooms: [] }), /No matches/);
 });
+
+// A chat's 72-hour window is a clock, not a writer: `materializeExpiry` only runs on a write path, and the reads
+// compute the state in `reportedConvState`. So a chat whose window has run out is still `status: "open"` on its
+// row, and the search used to filter on that column alone — it offered a thread the conversation page already
+// answers as `closed`/`expired`, and the hit opened a dead end. The filter has to be the same set the lists use.
+const expireNow = (s: { platform: any }, id: string, secondsAgo = 1) =>
+  s.platform.db.prepare("UPDATE conversations SET expires_at = ? WHERE id = ?").run(new Date(Date.now() - secondsAgo * 1000).toISOString(), id);
+const expireLater = (s: { platform: any }, id: string) =>
+  s.platform.db.prepare("UPDATE conversations SET expires_at = ? WHERE id = ?").run(new Date(Date.now() + 3600e3).toISOString(), id);
+
+test("a chat whose window ran out is not a hit for its owner, and the pair read in the same run disagrees", async (t) => {
+  const s = await startServer();
+  t.after(s.stop);
+  const { A, B } = await friends(s.base);
+  const conv = await B.bot.startConversation(A.bot.id, { type: "general_chat", summary: "Thread with a clock" });
+  expireNow(s, conv.conversation_id);
+  // The conversation page has already answered the clock; the row itself was never rewritten.
+  const page = await req(s.base, "GET", `/v1/conversations/${conv.conversation_id}`, A.owner.token);
+  assert.equal(page.status, 200);
+  assert.equal(page.body.status, "closed");
+  assert.equal(page.body.outcome, "expired");
+  const owner = await find(s.base, A, bare(B.handle));
+  assert.equal(owner.status, 200);
+  assert.equal(owner.body.chats.length, 0, "an expired chat is not a search hit for the owner");
+});
+
+test("the same expired chat is not a hit for the Bot token that sits on one side of it", async (t) => {
+  const s = await startServer();
+  t.after(s.stop);
+  const { A, B } = await friends(s.base);
+  const conv = await B.bot.startConversation(A.bot.id, { type: "general_chat", summary: "Thread with a clock" });
+  // The live thread is a hit for the Bot before the clock moves, so the empty answer below is the window's work.
+  const live = await req(s.base, "GET", `/v1/search?q=${encodeURIComponent(bare(B.handle))}`, A.reg.bot_token);
+  assert.equal(live.body.chats.length, 1);
+  expireNow(s, conv.conversation_id);
+  const expired = await req(s.base, "GET", `/v1/search?q=${encodeURIComponent(bare(B.handle))}`, A.reg.bot_token);
+  assert.equal(expired.status, 200);
+  assert.equal(expired.body.chats.length, 0, "an expired chat is not a search hit for the Bot token either");
+});
+
+test("control: a chat still inside its window is a hit and keeps its status", async (t) => {
+  const s = await startServer();
+  t.after(s.stop);
+  const { A, B } = await friends(s.base);
+  const conv = await B.bot.startConversation(A.bot.id, { type: "general_chat", summary: "Thread with a clock" });
+  expireLater(s, conv.conversation_id);
+  const hit = await find(s.base, A, bare(B.handle));
+  assert.equal(hit.body.chats.length, 1);
+  assert.equal(hit.body.chats[0].conversation_id, conv.conversation_id);
+  assert.equal(hit.body.chats[0].status, "open", "the status field of a live chat is unchanged");
+});
+
+test("control: a chat the owner closed by hand is still not a hit", async (t) => {
+  const s = await startServer();
+  t.after(s.stop);
+  const { A, B } = await friends(s.base);
+  const conv = await B.bot.startConversation(A.bot.id, { type: "general_chat", summary: "Thread with a clock" });
+  assert.equal((await find(s.base, A, bare(B.handle))).body.chats.length, 1);
+  assert.equal((await req(s.base, "POST", `/v1/conversations/${conv.conversation_id}/close`, A.owner.token, { outcome: "abandoned" })).status, 200);
+  assert.equal((await find(s.base, A, bare(B.handle))).body.chats.length, 0, "a closed chat keeps its own way out");
+});

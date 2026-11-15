@@ -6059,6 +6059,11 @@ export class Platform {
   mintLocalRoomInvite(p: Principal, body: any, ctx: { ip?: string } = {}) {
     const ownerId = p.ownerId;
     const ip = String(ctx.ip ?? "").slice(0, 80) || null;
+    // The room id is a string or nothing, and `String(...)` below is what reads it: an array would be stored as its
+    // contents, `true` and `7` as their text, and an object without a `toString` throws — a 500 on the body's fault.
+    // Judged here, before the coercion and before the attempt record, the ticket row and the mint audit entry.
+    // Absent and null still fall through to the shape check, which keeps its own characters message.
+    assert(body?.room_id === undefined || body?.room_id === null || typeof body.room_id === "string", 400, "invalid_request", "room_id must be a string");
     const roomId = String(body?.room_id ?? "").trim();
     assert(isLocalRoomId(roomId), 400, "invalid_request", "room_id: 1-64 chars [A-Za-z0-9._:-]");
     // A face room has its own invitation, and its grants must never be written by someone outside it.
